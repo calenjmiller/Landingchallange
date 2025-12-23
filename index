@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1, user-scalable=no" />
+  <title>Landing Challenge</title>
+  <style>
+    :root { --panel: rgba(17,26,51,0.78); --line: rgba(255,255,255,0.12); }
+    html, body { margin:0; height:100%; background:#0b1020; color:#e8eefc; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+    body { overscroll-behavior:none; }
+    #wrap { height:100%; display:flex; flex-direction:column; }
+    #topbar { padding:10px 12px; background:#111a33; border-bottom:1px solid var(--line); }
+    #topbar b { color:#fff; }
+    #hud { margin-top:6px; font-size:13px; line-height:1.35; opacity:.95; display:flex; gap:14px; flex-wrap:wrap; }
+    #hud span { white-space:nowrap; }
+    #hint { margin-top:8px; font-size:12px; opacity:.85; }
+    canvas { width:100%; flex:1; display:block; touch-action:none; }
+
+    #footer { padding:8px 12px 88px; background:#111a33; border-top:1px solid var(--line); font-size:12px; opacity:.9; }
+    .key { padding:1px 6px; border:1px solid rgba(255,255,255,.25); border-bottom-width:2px; border-radius:6px; margin:0 2px; }
+
+    /* Touch controls */
+    #touchControls {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      padding: 10px 10px 14px;
+      display:flex; gap:10px; justify-content:space-between; align-items:flex-end;
+      pointer-events:none; z-index: 50;
+    }
+    #touchControls .panel {
+      pointer-events:auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      backdrop-filter: blur(8px);
+      border-radius: 14px;
+      padding: 10px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    .btn {
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.10);
+      color: #fff;
+      border-radius: 16px;
+      font-size: 14px;
+      font-weight: 800;
+      display:flex; align-items:center; justify-content:center;
+      user-select:none; -webkit-user-select:none;
+      width: 74px; height: 64px;
+      touch-action:none;
+    }
+    .btn:active { transform: scale(0.98); background: rgba(255,255,255,0.16); }
+    .row { display:flex; gap:10px; }
+    .label { font-weight:800; font-size:12px; opacity:.9; margin-bottom:8px; }
+
+    .throttleWrap { width: 180px; }
+    .throttleWrap label { display:flex; justify-content:space-between; font-size:12px; opacity:.9; margin-bottom:8px; }
+    input[type="range"]{ width:100%; accent-color:#7bd3ff; }
+    .smallRow { display:flex; gap:10px; margin-top:10px; }
+    .btnSmall { width: 85px; height: 44px; border-radius: 14px; font-size: 13px; }
+
+    #errorBox{
+      position: fixed; top: 10px; left: 10px; right: 10px;
+      background: rgba(255, 65, 92, 0.15);
+      border: 1px solid rgba(255, 65, 92, 0.35);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display:none;
+      z-index: 99;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+
+    @media (min-width: 980px){
+      #touchControls { display:none; }
+      #footer { padding-bottom: 8px; }
+    }
+  </style>
+</head>
+<body>
+<div id="errorBox"></div>
+
+<div id="wrap">
+  <div id="topbar">
+    <div><b>Landing Challenge</b> — hit the touchdown zone, stay on centerline, keep a gentle sink rate.</div>
+    <div id="hud"></div>
+    <div id="hint">
+      Keyboard:
+      <span class="key">↑</span>/<span class="key">↓</span> pitch,
+      <span class="key">←</span>/<span class="key">→</span> throttle,
+      <span class="key">A</span>/<span class="key">D</span> rudder,
+      <span class="key">R</span> restart
+      <span style="opacity:.7">| Mobile: buttons + throttle slider</span>
+    </div>
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <div id="footer">
+    Tips: Stabilize ~65–75 kt. Small corrections. Flare lightly near the numbers. Don’t chase the centerline too hard.
+  </div>
+</div>
+
+<div id="touchControls">
+  <div class="panel">
+    <div class="label">PITCH</div>
+    <div class="row">
+      <div class="btn" id="btnPitchUp">↑</div>
+      <div class="btn" id="btnPitchDown">↓</div>
+    </div>
+  </div>
+
+  <div class="panel throttleWrap">
+    <label><span style="font-weight:900;">THROTTLE</span><span id="throttlePct">50%</span></label>
+    <input id="throttleSlider" type="range" min="0" max="100" value="50" />
+    <div class="smallRow">
+      <div class="btn btnSmall" id="btnMinus">-10%</div>
+      <div class="btn btnSmall" id="btnPlus">+10%</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label">RUDDER</div>
+    <div class="row">
+      <div class="btn" id="btnRudderL">A</div>
+      <div class="btn" id="btnRudderR">D</div>
+    </div>
+    <div class="smallRow">
+      <div class="btn btnSmall" id="btnRestart">RESTART</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  // On-screen error reporting (helps on iPhone)
+  const errorBox = document.getElementById('errorBox');
+  function showErr(msg){
+    errorBox.style.display = 'block';
+    errorBox.textContent = "Game error:\n" + msg;
+  }
+  window.addEventListener('error', (e) => showErr(e.message + "\n" + (e.filename||"") + ":" + (e.lineno||"")));
+  window.addEventListener('unhandledrejection', (e) => showErr(String(e.reason || e)));
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const hud = document.getElementById('hud');
+
+  // Resize (mobile-safe)
+  function resize() {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  // World: runway and glidepath
+  const runway = {
+    x: 0,
+    width: 160,
+    length: 2600,
+    thresholdY: 0,
+    tzStart: 260,
+    tzEnd: 520,
+    aimPoint: 380
+  };
+
+  const plane = {
+    x: 0,
+    y: -1400,
+    alt: 950,
+    gs: 75,         // kt
+    vs: 0,          // ft/s (positive down)
+    pitch: 0.02,    // affects vs
+    throttle: 0.50,
+    rudder: 0,      // -1..1
+    latV: 0,        // world units/sec
+    onGround: false,
+    crashed: false
+  };
+
+  let env = { xwind: 0, gust: 0, turb: 0, windDir: 200 };
+  let touchdown = null;
+  let score = 0;
+
+  // Input (keyboard + touch)
+  const keys = new Set();
+  addEventListener('keydown', e => { if (e.key.toLowerCase()==='r') reset(); keys.add(e.key); });
+  addEventListener('keyup', e => keys.delete(e.key));
+
+  const touch = { up:false, down:false, left:false, right:false };
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function lerp(a,b,t){ return a + (b-a)*t; }
+
+  // Touch buttons: press & hold
+  function bindHold(id, key){
+    const el = document.getElementById(id);
+    const down = (e) => { e.preventDefault(); touch[key] = true; };
+    const up = (e) => { e.preventDefault(); touch[key] = false; };
+    el.addEventListener('touchstart', down, {passive:false});
+    el.addEventListener('touchend', up, {passive:false});
+    el.addEventListener('touchcancel', up, {passive:false});
+    el.addEventListener('mousedown', down);
+    addEventListener('mouseup', up);
+  }
+  bindHold('btnPitchUp','up');
+  bindHold('btnPitchDown','down');
+  bindHold('btnRudderL','left');
+  bindHold('btnRudderR','right');
+
+  // Throttle slider & buttons
+  const throttleSlider = document.getElementById('throttleSlider');
+  const throttlePct = document.getElementById('throttlePct');
+
+  function setThrottle(v01){
+    plane.throttle = clamp(v01, 0, 1);
+    const pct = Math.round(plane.throttle * 100);
+    throttleSlider.value = String(pct);
+    throttlePct.textContent = pct + "%";
+  }
+  throttleSlider.addEventListener('input', () => setThrottle(parseInt(throttleSlider.value,10)/100));
+  document.getElementById('btnMinus').addEventListener('click', () => setThrottle(plane.throttle - 0.10));
+  document.getElementById('btnPlus').addEventListener('click', () => setThrottle(plane.throttle + 0.10));
+  document.getElementById('btnRestart').addEventListener('click', () => reset());
+
+  function reset(){
+    touchdown = null; score = 0;
+    plane.x = 0; plane.y = -1400; plane.alt = 950;
+    plane.gs = 75; plane.vs = 0;
+    plane.pitch = 0.02; plane.rudder = 0;
+    plane.latV = 0; plane.onGround = false; plane.crashed = false;
+
+    // New wind each run
+    env.xwind = Math.round((Math.random()*18 - 9)); // -9..+9 kt
+    env.gust = Math.round(Math.random()*7);         // 0..7 kt
+    env.turb = Math.random()*0.8;                   // 0..0.8
+    env.windDir = 180 + Math.round(Math.random()*60 - 30);
+
+    setThrottle(0.50);
+  }
+
+  function scoreLanding(t){
+    if (t.offRunway) return 0;
+    let s = 100;
+
+    // Touchdown zone
+    if (t.y < runway.tzStart) s -= 18;
+    if (t.y > runway.tzEnd) s -= 18;
+
+    // Aimpoint bonus
+    const aimErr = Math.abs(t.y - runway.aimPoint);
+    s -= clamp((aimErr - 60) * 0.07, 0, 25);
+
+    // Centerline
+    const cx = Math.abs(t.x);
+    s -= clamp((cx - 6) * 1.0, 0, 50);
+
+    // Speed target 65–75
+    if (t.gs < 55) s -= (55 - t.gs) * 2.0;
+    if (t.gs > 85) s -= (t.gs - 85) * 1.6;
+    if (t.gs >= 75 && t.gs <= 85) s -= (t.gs - 75) * 0.6;
+    if (t.gs >= 55 && t.gs < 65) s -= (65 - t.gs) * 0.6;
+
+    // Sink rate (fpm)
+    const fpm = t.vs * 60;
+    if (fpm > 700) s -= 60;
+    else if (fpm > 500) s -= 35;
+    else if (fpm > 300) s -= 18;
+    else if (fpm > 180) s -= 8;
+
+    return Math.round(clamp(s, 0, 100));
+  }
+
+  // Loop
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.033, (now-last)/1000);
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function update(dt){
+    if (touchdown) return;
+
+    // Controls
+    const pitchUp = keys.has('ArrowUp') || touch.up;
+    const pitchDn = keys.has('ArrowDown') || touch.down;
+
+    if (!plane.onGround && !plane.crashed){
+      if (pitchUp) plane.pitch -= 0.12 * dt;
+      if (pitchDn) plane.pitch += 0.12 * dt;
+      plane.pitch = clamp(plane.pitch, -0.12, 0.16);
+
+      if (keys.has('ArrowLeft')) setThrottle(plane.throttle - 0.55 * dt);
+      if (keys.has('ArrowRight')) setThrottle(plane.throttle + 0.55 * dt);
+
+      const rudL = keys.has('a') || keys.has('A') || touch.left;
+      const rudR = keys.has('d') || keys.has('D') || touch.right;
+      const targetR = (rudR ? 1 : 0) + (rudL ? -1 : 0);
+      plane.rudder = lerp(plane.rudder, targetR, 10 * dt);
+    }
+
+    // Wind model
+    const gust = env.gust ? Math.sin(performance.now()/360) * env.gust : 0;
+    const xwind = env.xwind + gust * 0.6;
+    const turb = (Math.sin(performance.now()/140)+Math.sin(performance.now()/90))*0.5*env.turb;
+
+    // Speed: throttle & pitch drag (more “airplane-ish”)
+    const targetGs = 55 + plane.throttle*55 - plane.pitch*40; // kt
+    plane.gs = lerp(plane.gs, clamp(targetGs, 45, 105), 1.8*dt);
+
+    // Vertical speed: stable approach then flare
+    // Pitch up reduces sink; throttle also reduces sink slightly
+    const baseSink = 10.8 - plane.throttle*5.8 + plane.pitch*85;
+    const sink = baseSink + (plane.gs - 70)*0.02; // ft/s down
+    plane.vs = lerp(plane.vs, clamp(sink, -4, 22), 2.4*dt);
+
+    // Move forward
+    plane.y += plane.gs * 7.8 * dt;
+
+    // Lateral drift: wind minus rudder
+    const rudEffect = plane.rudder * 11.5;
+    const lateralKt = xwind - rudEffect + turb*0.7;
+    plane.latV = lerp(plane.latV, lateralKt*8.5, 2.2*dt);
+    plane.x += plane.latV * dt;
+
+    // Altitude
+    plane.alt -= plane.vs * dt;
+    if (plane.alt < 0) plane.alt = 0;
+
+    // Touchdown
+    if (plane.alt <= 0.01){
+      const onX = Math.abs(plane.x - runway.x) <= runway.width/2;
+      const onY = plane.y >= runway.thresholdY && plane.y <= runway.thresholdY + runway.length;
+      const off = !(onX && onY);
+
+      touchdown = { x: plane.x, y: plane.y, gs: plane.gs, vs: plane.vs, offRunway: off };
+      score = scoreLanding(touchdown);
+
+      const fpm = plane.vs * 60;
+      if (off || fpm > 900) plane.crashed = true;
+      else plane.onGround = true;
+    }
+  }
+
+  function draw(){
+    const W = canvas.clientWidth;
+    const H = canvas.clientHeight;
+
+    // Camera follows plane
+    const camY = plane.y - 320;
+    const camX = 0;
+
+    // Sky
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#06102a');
+    g.addColorStop(1, '#0b1020');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // Helpers
+    const S = (x, y) => ({ x: W/2 + (x - camX), y: H - (y - camY) });
+
+    // Runway
+    const topLeft = S(runway.x - runway.width/2, runway.thresholdY + runway.length);
+    const botLeft = S(runway.x - runway.width/2, runway.thresholdY);
+    ctx.fillStyle = '#2b2f3a';
+    ctx.fillRect(botLeft.x, topLeft.y, runway.width, botLeft.y - topLeft.y);
+
+    // Edge lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(S(runway.x - runway.width/2, runway.thresholdY).x, S(0,runway.thresholdY).y);
+    ctx.lineTo(S(runway.x - runway.width/2, runway.thresholdY+runway.length).x, S(0,runway.thresholdY+runway.length).y);
+    ctx.moveTo(S(runway.x + runway.width/2, runway.thresholdY).x, S(0,runway.thresholdY).y);
+    ctx.lineTo(S(runway.x + runway.width/2, runway.thresholdY+runway.length).x, S(0,runway.thresholdY+runway.length).y);
+    ctx.stroke();
+
+    // Centerline dashes
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([18, 18]);
+    ctx.beginPath();
+    ctx.moveTo(S(runway.x, runway.thresholdY).x, S(0, runway.thresholdY).y);
+    ctx.lineTo(S(runway.x, runway.thresholdY + runway.length).x, S(0, runway.thresholdY + runway.length).y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Touchdown zone highlight
+    const tz1 = S(0, runway.tzStart);
+    const tz2 = S(0, runway.tzEnd);
+    ctx.fillStyle = 'rgba(60,180,255,0.10)';
+    ctx.fillRect(botLeft.x, tz2.y, runway.width, tz1.y - tz2.y);
+
+    // Aimpoint band
+    const ap = S(0, runway.aimPoint);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillRect(botLeft.x, ap.y - 10, runway.width, 20);
+
+    // Simple glidepath marker (target altitude vs distance)
+    // target alt roughly 300 ft at y=0 from y=-1000 (just a visual guide)
+    const guideX = runway.x + runway.width/2 + 40;
+    ctx.strokeStyle = 'rgba(123,211,255,0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i=0;i<=10;i++){
+      const yy = -900 + i*180;
+      const frac = (yy + 900) / 1800;
+      const targetAlt = 650 - frac*650;
+      const p = S(guideX, yy);
+      const yOnScreen = p.y - targetAlt*0.22;
+      if (i===0) ctx.moveTo(p.x, yOnScreen);
+      else ctx.lineTo(p.x, yOnScreen);
+    }
+    ctx.stroke();
+
+    // Plane icon (kept on-screen)
+    const p = S(plane.x, plane.y);
+    const py = Math.min(H - 105, p.y);
+    ctx.save();
+    ctx.translate(p.x, py);
+    const bank = clamp(plane.latV / 240, -0.35, 0.35);
+    ctx.rotate(bank);
+    ctx.fillStyle = plane.crashed ? '#ff4d6d' : '#e8eefc';
+    ctx.beginPath();
+    ctx.moveTo(0, -18);
+    ctx.lineTo(11, 12);
+    ctx.lineTo(0, 6);
+    ctx.lineTo(-11, 12);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(232,238,252,0.95)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(-20, 2);
+    ctx.lineTo(20, 2);
+    ctx.stroke();
+    ctx.restore();
+
+    // HUD
+    const fpm = plane.vs * 60;
+    const windTxt = `${env.windDir}° @ ${Math.abs(env.xwind)}kt xwind${env.xwind>=0 ? ' (from R)' : ' (from L)'}`;
+    hud.innerHTML = `
+      <span>ALT: <b>${plane.alt.toFixed(0)}</b> ft</span>
+      <span>GS: <b>${plane.gs.toFixed(0)}</b> kt</span>
+      <span>VS: <b>${fpm.toFixed(0)}</b> fpm</span>
+      <span>CTR: <b>${Math.abs(plane.x).toFixed(0)}</b> ft</span>
+      <span>Pitch: <b>${(plane.pitch*100).toFixed(0)}</b></span>
+      <span>Wind: <b>${windTxt}</b></span>
+    `;
+
+    // Result overlay
+    if (touchdown){
+      ctx.fillStyle = 'rgba(0,0,0,0.58)';
+      ctx.fillRect(14, 14, Math.min(W-28, 560), 155);
+
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 18px system-ui,-apple-system,Segoe UI,Roboto,Arial';
+      ctx.fillText(plane.crashed ? 'RESULT: CRASH / OFF RUNWAY' : 'RESULT: LANDED', 28, 44);
+
+      ctx.font = '14px system-ui,-apple-system,Segoe UI,Roboto,Arial';
+      ctx.fillText(`Touchdown Y: ${touchdown.y.toFixed(0)}   |   Centerline: ${Math.abs(touchdown.x).toFixed(0)} ft`, 28, 72);
+      ctx.fillText(`Speed: ${touchdown.gs.toFixed(0)} kt   |   Sink: ${(touchdown.vs*60).toFixed(0)} fpm`, 28, 94);
+
+      let grade = 'F';
+      if (score >= 90) grade = 'A';
+      else if (score >= 80) grade = 'B';
+      else if (score >= 70) grade = 'C';
+      else if (score >= 60) grade = 'D';
+
+      ctx.font = 'bold 16px system-ui,-apple-system,Segoe UI,Roboto,Arial';
+      ctx.fillText(`Score: ${score}/100  (Grade: ${grade})`, 28, 122);
+
+      ctx.font = '13px system-ui,-apple-system,Segoe UI,Roboto,Arial';
+      ctx.fillStyle = 'rgba(232,238,252,0.92)';
+      ctx.fillText(`Tap RESTART (or press R) to try again.`, 28, 144);
+    }
+  }
+
+  // Start
+  resize();
+  reset();
+  requestAnimationFrame(loop);
+
+  // If canvas ever ends up zero height, show a helpful message
+  setTimeout(() => {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.height < 50) showErr("Canvas height is too small (layout issue). Try refreshing or rotate phone.");
+  }, 400);
+})();
+</script>
+</body>
+</html>
